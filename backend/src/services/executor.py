@@ -19,13 +19,23 @@ from src.config.database import SessionLocal
 from src.config.celery_app import celery_app
 from src.config.logging import logger
 from src.config.settings import settings
-from src.constants.enums import ErrorCode, InterventionReason, InterventionStatus, RunStatus, RunStepStatus
+from src.constants.enums import (
+    ErrorCode,
+    InterventionReason,
+    InterventionStatus,
+    ReconcileBucket,
+    RunStatus,
+    RunStepStatus,
+    StepPathRole,
+)
 from src.models.intervention import Intervention
 from src.models.material import Material
 from src.models.process import Process
 from src.models.run import Run
 from src.models.run_step import RunStep
 from src.models.step import Step
+from src.services.branch_planner import plan_branches
+from src.services.branch_service import material_snapshot
 
 ATTEMPT_RETRY_BASE_SECONDS = 1
 
@@ -165,6 +175,37 @@ def _get_or_create_runstep(db, run: Run, step: Step, key: str) -> RunStep:
     return run_step
 
 
+def _branch_index(steps: list[Step]) -> dict[int, dict]:
+    index: dict[int, dict] = {}
+    for step in steps:
+        meta = step.branch_meta or {}
+        if meta.get("branch_id"):
+            index[step.seq] = meta
+    return index
+
+
+def _mark_branch_skipped(db, run: Run, step: Step, meta: dict, existing: RunStep | None) -> RunStep:
+    """未命中分支留痕：写 skipped 的 RunStep，绝不触发页面动作。"""
+    reason = f"未命中分支 {meta.get('branch_id')}（适用条件 {meta.get('when') or '默认'} 不成立）"
+    if existing is not None:
+        run_step = existing
+    else:
+        run_step = RunStep(run_id=run.id, step_id=step.id, seq=step.seq,
+                           status=RunStepStatus.SKIPPED.value)
+        db.add(run_step)
+    run_step.status = RunStepStatus.SKIPPED.value
+    run_step.path_role = StepPathRole.BRANCH_SKIPPED.value
+    run_step.branch_id = meta.get("branch_id", "")
+    run_step.path_id = meta.get("path_id", "")
+    run_step.reconcile_bucket = ReconcileBucket.SKIPPED.value
+    run_step.skip_reason = reason
+    run_step.note = "分支留痕：本路径不适用当前材料"
+    run_step.error_code = None
+    run_step.error_message = ""
+    db.flush()
+    return run_step
+
+
 def _open_intervention(db, run: Run, run_step: RunStep, reason: str, detail: str) -> Intervention:
     code = f"IV-{run.run_code}-{run_step.seq:02d}"
     existing = db.scalars(select(Intervention).where(Intervention.code == code)).first()
@@ -213,8 +254,37 @@ def _execute(db, run: Run, dry_run: bool) -> None:
         return
 
     steps = db.scalars(select(Step).where(Step.process_id == run.process_id).order_by(Step.seq)).all()
+    branch_index = _branch_index(list(steps))
     try:
-        ordered = kahn_topological_order(list(steps))
+        if branch_index:
+            # 续跑/补录后重跑优先复用首次落库的规划快照，保证一次运行只走同一条路径；
+            # 仅首次执行（无快照）时按当前材料重新规划。
+            if isinstance(run.branch_plan, dict) and run.branch_plan.get("ordered_seqs"):
+                ordered_seqs = list(run.branch_plan["ordered_seqs"])
+                _append_log(run, "复用已落库分支规划（续跑不重新选路，避免补录导致路径翻转）")
+            else:
+                plan = plan_branches(
+                    [{"seq": s.seq, "target_desc": s.target_desc, "action": s.action,
+                      "branch_meta": s.branch_meta or {}} for s in steps],
+                    material_snapshot(material),
+                )
+                ordered_seqs = plan.ordered_seqs
+                run.branch_plan = {
+                    "ordered_seqs": plan.ordered_seqs,
+                    "expected_seqs": plan.expected_seqs,
+                    "skipped_branch_seqs": plan.skipped_branch_seqs,
+                    "chosen_paths": plan.chosen_paths,
+                    "merge_points": plan.merge_points,
+                    "unknown_conditions": plan.unknown_conditions,
+                    "warnings": plan.warnings,
+                    "groups": plan.groups,
+                }
+                run.preflight_blockers = list(plan.unknown_conditions)
+            seq_to_step = {s.seq: s for s in steps}
+            ordered = [seq_to_step[seq] for seq in ordered_seqs]
+        else:
+            ordered = kahn_topological_order(list(steps))
+            run.branch_plan = {}
     except ValueError as exc:
         _append_log(run, f"调度失败：{exc}")
         _finish(db, run, RunStatus.FAILED.value)
@@ -225,7 +295,12 @@ def _execute(db, run: Run, dry_run: bool) -> None:
     run.status = RunStatus.RUNNING.value
     run.started_at = run.started_at or datetime.now()
     run.attempt_count = (run.attempt_count or 0) + 1
-    _append_log(run, f"robot={run.robot_name} 触发={run.trigger} DAG 拓扑序列={run.execution_sequence}")
+    if branch_index:
+        chosen = run.branch_plan.get("chosen_paths", {}) if isinstance(run.branch_plan, dict) else {}
+        _append_log(run, f"robot={run.robot_name} 触发={run.trigger} 分支规划命中路径={chosen} "
+                         f"汇合点={run.branch_plan.get('merge_points')} 序列={run.execution_sequence}")
+    else:
+        _append_log(run, f"robot={run.robot_name} 触发={run.trigger} DAG 拓扑序列={run.execution_sequence}")
     db.commit()
 
     interventions = db.scalars(select(Intervention).where(Intervention.run_id == run.id)).all()
@@ -249,18 +324,32 @@ def _execute(db, run: Run, dry_run: bool) -> None:
 
         key = idempotency_key(run.id, step.id, material.credit_code)
         run_step = existing_steps.get(step.id)
+        meta = branch_index.get(step.seq)
+
+        # 分支留痕：未命中路径的步骤只写 skipped，不执行任何页面动作
+        if meta and step.seq in set(run.branch_plan.get("skipped_branch_seqs", [])):
+            _mark_branch_skipped(db, run, step, meta, run_step)
+            skipped.append(step.seq)
+            _append_log(run, f"step {step.seq:02d} 分支留痕跳过（{meta.get('path_id')}，条件 {meta.get('when') or '默认'} 不成立）")
+            db.commit()
+            continue
+
         manual_action = resolved_actions.get(run_step.id) if run_step else None
 
         if (run_step and run_step.status in (RunStepStatus.OK.value, RunStepStatus.RETRIED.value)
                 and run_step.idempotency_key == key):
             skipped.append(step.seq)
             success += 1
-            _append_log(run, f"step {step.seq:02d} 幂等键命中，跳过（断点续跑）")
+            run_step.reconcile_bucket = ReconcileBucket.SKIPPED.value
+            run_step.skip_reason = run_step.skip_reason or "断点续跑幂等命中"
+            _append_log(run, f"step {step.seq:02d} 幂等键命中，跳过（断点续跑，不重复主流程步骤）")
             continue
 
         if run_step and manual_action == "skip":
             run_step.status = RunStepStatus.SKIPPED.value
             run_step.note = "接管跳过"
+            run_step.reconcile_bucket = ReconcileBucket.SKIPPED.value
+            run_step.skip_reason = "人工接管选择跳过"
             skipped.append(step.seq)
             _append_log(run, f"step {step.seq:02d} 接管选择跳过")
             db.commit()
@@ -272,6 +361,10 @@ def _execute(db, run: Run, dry_run: bool) -> None:
             run_step.error_code = None
             run_step.error_message = ""
             run_step.note = "人工接管放行（材料已补录 / 定位器已调整）"
+            if meta:
+                run_step.path_role = StepPathRole.BRANCH_TAKEN.value
+                run_step.branch_id = meta.get("branch_id", "")
+                run_step.path_id = meta.get("path_id", "")
             retries_used += 1
             success += 1
             _append_log(run, f"step {step.seq:02d} 接管 {manual_action} 后放行")
@@ -300,16 +393,25 @@ def _execute(db, run: Run, dry_run: bool) -> None:
         run_step.output_digest = result.output_digest
         run_step.error_code = result.error_code
         run_step.error_message = result.message
+        if meta:
+            run_step.path_role = StepPathRole.BRANCH_TAKEN.value
+            run_step.branch_id = meta.get("branch_id", "")
+            run_step.path_id = meta.get("path_id", "")
+        else:
+            run_step.path_role = StepPathRole.MAIN.value
 
         if result.status == "ok":
             run_step.status = RunStepStatus.RETRIED.value if attempt > 1 else RunStepStatus.OK.value
+            run_step.reconcile_bucket = ReconcileBucket.EXECUTED.value
             success += 1
-            _append_log(run, f"step {step.seq:02d} {step.action} {step.target_desc} "
+            branch_tag = f"[{run_step.path_id}] " if meta else ""
+            _append_log(run, f"step {step.seq:02d} {branch_tag}{step.action} {step.target_desc} "
                              f"attempt={attempt} locator={result.locator_used}")
             db.commit()
             continue
 
         run_step.status = RunStepStatus.FAILED.value
+        run_step.reconcile_bucket = ReconcileBucket.EXECUTED.value
         reason = InterventionReason.ASSERT_FAILED.value if result.status == "assert_failed" else InterventionReason.TIMEOUT.value
         _open_intervention(db, run, run_step, reason, result.message or result.error_code or "步骤失败")
         _append_log(run, f"step {step.seq:02d} 失败 {result.error_code}：{result.message}，生成接管工单")
@@ -320,8 +422,11 @@ def _execute(db, run: Run, dry_run: bool) -> None:
 
     run.success_steps = success
     run.retry_count = (run.retry_count or 0) + retries_used
-    run.skipped_steps = skipped
-    _append_log(run, f"运行完成：成功 {success}/{run.total_steps}，跳过 {len(skipped)}，重试 {retries_used}")
+    run.skipped_steps = sorted(set(skipped))
+    expected_total = len(run.branch_plan.get("expected_seqs", [])) if isinstance(run.branch_plan, dict) and run.branch_plan else run.total_steps
+    branch_skipped = len(run.branch_plan.get("skipped_branch_seqs", [])) if isinstance(run.branch_plan, dict) else 0
+    _append_log(run, f"运行完成：应执行 {expected_total}，成功 {success}，分支留痕跳过 {branch_skipped}，"
+                     f"断点/接管跳过 {len(run.skipped_steps) - branch_skipped}，重试 {retries_used}")
     _finish(db, run, RunStatus.SUCCEEDED.value)
 
 

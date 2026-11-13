@@ -9,6 +9,7 @@ import Panel from '../components/common/Panel';
 import StatusLamp from '../components/common/StatusLamp';
 import StepTimeline from '../components/business/StepTimeline';
 import LocatorCandidateList from '../components/business/LocatorCandidateList';
+import ReconciliationPanel from '../components/business/ReconciliationPanel';
 import {
   INTERVENTION_ACTIONS, INTERVENTION_REASON_LABELS, INTERVENTION_STATUS_LABELS,
   POLL_INTERVALS, RUN_STATUS_LABELS, RUN_STEP_STATUS_LABELS, RUN_TRIGGER_LABELS,
@@ -161,7 +162,9 @@ export default function RunDetailPage() {
                 seq: item.seq, status: item.status, target_desc: item.target_desc, action: item.action,
                 attempt: item.attempt, duration_ms: item.duration_ms, locator_used: item.locator_used,
                 locator_strategy: item.locator_strategy, error_code: item.error_code,
-                error_message: item.error_message, note: item.note,
+                error_message: item.error_message, note: item.note, path_role: item.path_role,
+                path_id: item.path_id, skip_reason: item.skip_reason,
+                reconcile_bucket: item.reconcile_bucket,
               }))}
               selectedSeq={selectedRunStep?.seq}
               onSelect={(step) => setSelectedSeq(step.seq)}
@@ -170,6 +173,20 @@ export default function RunDetailPage() {
               <EmptyState title="尚无步骤记录" hint="运行刚入队，等待 Celery worker 消费。" />
             ) : null}
           </Panel>
+
+          {run.reconciliation ? <ReconciliationPanel reconciliation={run.reconciliation} /> : null}
+
+          {run.preflight_blockers?.length ? (
+            <Panel kicker="PREFLIGHT BLOCKERS" title="发起前预检：无法判断的条件">
+              <div className="stack">
+                {run.preflight_blockers.map((item) => (
+                  <div key={`${item.branch_id}-${item.path_id}`} className="banner">
+                    step {item.entry_seq} 条件 <code>{item.when}</code>：{item.reason}
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          ) : null}
 
           <Panel kicker="EXECUTION LOG" title="执行日志" actions={
             <button className="btn btn-ghost btn-sm" type="button" onClick={() => load()}>刷新</button>

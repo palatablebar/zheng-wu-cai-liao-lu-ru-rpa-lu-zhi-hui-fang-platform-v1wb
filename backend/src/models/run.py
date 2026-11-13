@@ -25,6 +25,10 @@ class Run(Base, TimestampMixin):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     execution_sequence: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     skipped_steps: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # 分支规划快照：chosen_paths/unknown_conditions/branch_groups/ordered_seqs
+    branch_plan: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # 发起前预检：无法判断条件的材料清单（正式申报非空则拦截）
+    preflight_blockers: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     compensation: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     log_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     active_lock: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)

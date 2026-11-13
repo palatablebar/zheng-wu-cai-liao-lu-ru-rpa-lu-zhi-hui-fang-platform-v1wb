@@ -8,10 +8,30 @@ from src.models.process import Process
 from src.models.run import Run
 from src.models.run_step import RunStep
 from src.models.step import Step
+from src.services.branch_service import branch_steps_out, validate_branch_definition
 from src.services.executor import load_history
 from src.services.locator_score import score_step
 from src.services.serializers import iso, process_out, step_out
 from src.utils.errors import AppError
+
+
+def _normalize_branch_meta(raw: dict | None) -> dict:
+    """规整分支元数据，丢弃空值，保证落库结构稳定。"""
+    if not raw:
+        return {}
+    branch_id = str(raw.get("branch_id") or "").strip()
+    if not branch_id:
+        return {}
+    meta = {
+        "branch_id": branch_id[:64],
+        "path_id": str(raw.get("path_id") or f"{branch_id}.default").strip()[:64],
+        "when": str(raw.get("when") or "").strip()[:255],
+        "is_default": bool(raw.get("is_default")),
+    }
+    merge_seq = raw.get("merge_seq")
+    if merge_seq is not None:
+        meta["merge_seq"] = int(merge_seq)
+    return meta
 
 
 def success_rate_map(db) -> dict[int, float]:
@@ -52,6 +72,7 @@ def process_detail(db, process_id: int) -> dict:
     steps = db.scalars(select(Step).where(Step.process_id == process_id).order_by(Step.seq)).all()
     data = process_out(process, success_rate_map(db).get(process.id, process.success_rate))
     data["steps"] = [step_out(step) for step in steps]
+    data["branch_groups"] = branch_steps_out(list(steps))
     data["risk_summary"] = {
         "high": sum(1 for step in steps if step.risk_level == RiskLevel.HIGH.value),
         "medium": sum(1 for step in steps if step.risk_level == RiskLevel.MEDIUM.value),
@@ -117,6 +138,11 @@ def update_step(db, process_id: int, step_id: int, payload: dict) -> dict:
         step.assert_rule = payload["assert_rule"] or None
     if payload.get("depends_on") is not None:
         step.depends_on = sorted({int(item) for item in payload["depends_on"] if int(item) != step.seq})
+    if payload.get("branch_meta") is not None:
+        step.branch_meta = _normalize_branch_meta(payload["branch_meta"])
+        db.flush()
+        all_steps = db.scalars(select(Step).where(Step.process_id == process_id).order_by(Step.seq)).all()
+        validate_branch_definition(list(all_steps))
     db.flush()
     result = build_step_scores(db, step)
     step.locator_scores = result["candidates"]
@@ -161,6 +187,7 @@ def import_steps(db, process_id: int, steps: list[dict], replace: bool = False) 
             max_retries=int(raw.get("max_retries", 2)),
             depends_on=[int(item) for item in raw.get("depends_on", [])],
             assert_rule=raw.get("assert_rule") or None,
+            branch_meta=_normalize_branch_meta(raw.get("branch_meta")),
             locator_scores=[],
             risk_level="medium",
             risk_reason="no_history",
@@ -168,6 +195,8 @@ def import_steps(db, process_id: int, steps: list[dict], replace: bool = False) 
         db.add(step)
         created.append(step)
     db.flush()
+    validate_branch_definition(created + db.scalars(
+        select(Step).where(Step.process_id == process_id)).all())
     rescore_process(db, process_id)
     process = get_process(db, process_id)
     process.step_count = db.scalar(select(func.count(Step.id)).where(Step.process_id == process_id))
@@ -182,6 +211,8 @@ def publish_process(db, process_id: int, note: str = "") -> dict:
     step_count = db.scalar(select(func.count(Step.id)).where(Step.process_id == process_id))
     if not step_count:
         raise AppError(422, "EMPTY_PROCESS", "流程没有步骤，不能发布")
+    steps = db.scalars(select(Step).where(Step.process_id == process_id).order_by(Step.seq)).all()
+    validate_branch_definition(list(steps))
     archived = list(process.archived_versions or [])
     if process.status == ProcessStatus.PUBLISHED.value:
         archived.append(f"v{process.version}")

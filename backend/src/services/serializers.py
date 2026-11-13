@@ -36,6 +36,7 @@ def step_out(step, include_candidates: bool = True) -> dict:
         "max_retries": step.max_retries,
         "depends_on": step.depends_on or [],
         "assert_rule": step.assert_rule or "",
+        "branch_meta": step.branch_meta or {},
         "robustness_score": round(float(step.robustness_score or 0), 1),
         "risk_level": step.risk_level,
         "risk_reason": step.risk_reason,
@@ -79,6 +80,8 @@ def run_out(run) -> dict:
         "execution_sequence": run.execution_sequence or [],
         "skipped_steps": run.skipped_steps or [],
         "compensation": run.compensation or [],
+        "branch_plan": run.branch_plan or {},
+        "preflight_blockers": run.preflight_blockers or [],
         "log_text": run.log_text or "",
         "created_at": iso(run.created_at),
     }
@@ -100,9 +103,15 @@ def run_step_out(run_step, step=None) -> dict:
         "idempotency_key": run_step.idempotency_key,
         "output_digest": run_step.output_digest,
         "note": run_step.note,
+        "path_role": run_step.path_role,
+        "branch_id": run_step.branch_id,
+        "path_id": run_step.path_id,
+        "reconcile_bucket": run_step.reconcile_bucket,
+        "skip_reason": run_step.skip_reason,
         "target_desc": step.target_desc if step else "",
         "action": step.action if step else "",
         "assert_rule": (step.assert_rule or "") if step else "",
+        "branch_meta": (step.branch_meta or {}) if step else {},
     }
 
 

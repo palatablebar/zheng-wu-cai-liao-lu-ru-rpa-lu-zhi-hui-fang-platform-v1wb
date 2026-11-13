@@ -37,6 +37,12 @@ def cand(strategy: str, selector: str, desc: str) -> dict:
 
 
 def annual_steps() -> list[dict]:
+    """年报流程：主流程 1-5 后进入审计报告条件分支，汇合点 seq=9（回到主流程）。
+
+    - audit.with（有审计报告）：seq 6-7，条件 attachment:审计报告 exists；
+    - audit.without（无审计报告）：seq 8，条件 attachment:审计报告 missing，标默认路径；
+    - seq 9 起回到主流程（注册资本/提交/回执）。
+    """
     return [
         {"seq": 1, "action": "click", "target_desc": "打开政务服务网企业年报入口",
          "candidates": [cand("id", "#annual-entry-card", "年报入口卡片"),
@@ -56,16 +62,30 @@ def annual_steps() -> list[dict]:
         {"seq": 5, "action": "upload", "target_desc": "上传营业执照扫描件",
          "candidates": [cand("css", "#annual-form .upload-license input[type=file]", "营业执照上传控件"),
                         cand("role", "button[name='上传营业执照']", "按钮无障碍名称")]},
-        {"seq": 6, "action": "assert", "target_desc": "校验审计报告附件", "assert_rule": "attachment:审计报告 exists",
+        {"seq": 6, "action": "upload", "target_desc": "上传2024年度审计报告扫描件",
+         "assert_rule": "attachment:审计报告 exists",
+         "branch_meta": {"branch_id": "audit", "path_id": "audit.with",
+                         "when": "attachment:审计报告 exists", "merge_seq": 9, "is_default": False},
+         "candidates": [cand("css", "#annual-form .upload-audit input[type=file]", "审计报告上传控件"),
+                        cand("text", "//h4[contains(text(),'审计报告')]", "附件事项标题")]},
+        {"seq": 7, "action": "assert", "target_desc": "校验审计报告附件",
+         "assert_rule": "attachment:审计报告 exists",
+         "branch_meta": {"branch_id": "audit", "path_id": "audit.with",
+                         "when": "attachment:审计报告 exists", "merge_seq": 9, "is_default": False},
          "candidates": [cand("text", "//h4[contains(text(),'审计报告')]", "附件事项标题"),
                         cand("css", "#annual-form .attachment-audit", "审计报告附件区")]},
-        {"seq": 7, "action": "input", "target_desc": "录入注册资本（万元）",
+        {"seq": 8, "action": "assert", "target_desc": "勾选无审计报告并填报免审计声明",
+         "branch_meta": {"branch_id": "audit", "path_id": "audit.without",
+                         "when": "attachment:审计报告 missing", "merge_seq": 9, "is_default": True},
+         "candidates": [cand("css", "#annual-form .no-audit-declare", "免审计声明勾选区"),
+                        cand("text", "//label[normalize-space()='本企业无审计报告']", "声明标签文本")]},
+        {"seq": 9, "action": "input", "target_desc": "录入注册资本（万元）",
          "candidates": [cand("css", "#annual-form .field-capital input", "注册资本输入框"),
                         cand("text", "//label[normalize-space()='注册资本（万元）']/following::input[1]", "标签文本定位")]},
-        {"seq": 8, "action": "click", "target_desc": "提交年报申报",
+        {"seq": 10, "action": "click", "target_desc": "提交年报申报",
          "candidates": [cand("text", "//button[normalize-space()='提交年报']", "提交按钮文本"),
                         cand("css", "#annual-form .btn-submit", "提交按钮样式")]},
-        {"seq": 9, "action": "assert", "target_desc": "校验申报回执编号", "assert_rule": "receipt_generated",
+        {"seq": 11, "action": "assert", "target_desc": "校验申报回执编号", "assert_rule": "receipt_generated",
          "candidates": [cand("id", "#receipt-code", "回执编号文本")]},
     ]
 
@@ -171,66 +191,99 @@ MATERIALS = [
     {"company_name": "苏州信德模塑有限公司", "credit_code": "91320508MA6QRTU3Y3",
      "contact": "李志强 0512-6611-4432",
      "attachments": ["营业执照", "公司章程"], "validity_date": date(2026, 8, 31), "missing_flags": []},
+    # 档案不完整：审计报告是否上传尚未录入（unknown 标记）→ 分支条件无法判断，正式申报被预检拦截
+    {"company_name": "苏州博远新材料有限公司", "credit_code": "91320506MA7BRANCH3",
+     "contact": "孙文博 0512-6777-2098",
+     "attachments": [], "validity_date": date(2026, 12, 1),
+     "missing_flags": ["attachment:审计报告:unknown"]},
 ]
 
-# step tuple: (seq, status, attempt, candidate_index, error_code, note)
+# step tuple: (seq, status, attempt, candidate_index, error_code, note, path_role)
 RUN_SPECS = [
     {"code": "RUN-20261103-001", "process": "2025 企业年报", "material": "苏州恒瑞精密机械有限公司",
      "trigger": "schedule", "status": "succeeded", "robot": "SU-BOT-01",
      "start": datetime(2026, 11, 3, 9, 12, 4), "end": datetime(2026, 11, 3, 9, 13, 41),
      "attempt_count": 1, "retry_count": 1,
-     "steps": [(1, "ok", 1, 0, None, ""), (2, "retried", 2, 0, None, "旧版动态定位器首次未命中，改用标签定位"),
-               (3, "ok", 1, 0, None, ""), (4, "ok", 1, 0, None, ""), (5, "ok", 1, 0, None, ""),
-               (6, "ok", 1, 0, None, ""), (7, "ok", 1, 0, None, ""), (8, "ok", 1, 0, None, ""),
-               (9, "ok", 1, 0, None, "")]},
+     "branch_plan": {"chosen_paths": {"audit": "audit.without"}, "merge_points": [9],
+                     "expected_seqs": [1, 2, 3, 4, 5, 8, 9, 10, 11],
+                     "skipped_branch_seqs": [6, 7]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"), (2, "retried", 2, 0, None, "旧版动态定位器首次未命中，改用标签定位", "main"),
+               (3, "ok", 1, 0, None, "", "main"), (4, "ok", 1, 0, None, "", "main"), (5, "ok", 1, 0, None, "", "main"),
+               (6, "skipped", 1, 0, None, "分支留痕：企业无审计报告，audit.with 路径不适用", "branch_skipped"),
+               (7, "skipped", 1, 0, None, "分支留痕：企业无审计报告，audit.with 路径不适用", "branch_skipped"),
+               (8, "ok", 1, 0, None, "无审计报告企业，填报免审计声明", "branch_taken"),
+               (9, "ok", 1, 0, None, "", "main"), (10, "ok", 1, 0, None, "", "main"),
+               (11, "ok", 1, 0, None, "", "main")]},
     {"code": "RUN-20261103-002", "process": "高新技术企业资质认定", "material": "苏州云启智能装备有限公司",
      "trigger": "schedule", "status": "succeeded", "robot": "SU-BOT-02",
      "start": datetime(2026, 11, 3, 14, 2, 10), "end": datetime(2026, 11, 3, 14, 3, 25),
      "attempt_count": 1, "retry_count": 0,
-     "steps": [(1, "ok", 1, 0, None, ""), (2, "ok", 1, 0, None, ""), (3, "ok", 1, 0, None, ""),
-               (4, "ok", 1, 0, None, ""), (5, "ok", 1, 0, None, ""), (6, "ok", 1, 0, None, ""),
-               (7, "ok", 1, 0, None, "")]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"), (2, "ok", 1, 0, None, "", "main"), (3, "ok", 1, 0, None, "", "main"),
+               (4, "ok", 1, 0, None, "", "main"), (5, "ok", 1, 0, None, "", "main"), (6, "ok", 1, 0, None, "", "main"),
+               (7, "ok", 1, 0, None, "", "main")]},
     {"code": "RUN-20261104-001", "process": "稳岗返还补贴申报", "material": "苏州华泰针织有限公司",
      "trigger": "schedule", "status": "failed", "robot": "SU-BOT-01",
      "start": datetime(2026, 11, 4, 10, 21, 3), "end": datetime(2026, 11, 4, 10, 24, 18),
      "attempt_count": 1, "retry_count": 2,
-     "steps": [(1, "ok", 1, 0, None, ""),
-               (2, "failed", 3, 0, "E_TIMEOUT", "政务网在信用代码校验环节连续超时，重试 3 次失败")]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"),
+               (2, "failed", 3, 0, "E_TIMEOUT", "政务网在信用代码校验环节连续超时，重试 3 次失败", "main")]},
     {"code": "RUN-20261104-002", "process": "高新技术企业资质认定", "material": "苏州恒瑞精密机械有限公司",
      "trigger": "schedule", "status": "succeeded", "robot": "SU-BOT-02",
      "start": datetime(2026, 11, 4, 15, 40, 6), "end": datetime(2026, 11, 4, 15, 41, 30),
      "attempt_count": 1, "retry_count": 1,
-     "steps": [(1, "ok", 1, 0, None, ""), (2, "ok", 1, 0, None, ""), (3, "ok", 1, 0, None, ""),
-               (4, "ok", 1, 0, None, ""), (5, "ok", 1, 0, None, ""), (6, "retried", 2, 0, None, "研发投入输入框首次超时，重试后成功"),
-               (7, "ok", 1, 0, None, "")]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"), (2, "ok", 1, 0, None, "", "main"), (3, "ok", 1, 0, None, "", "main"),
+               (4, "ok", 1, 0, None, "", "main"), (5, "ok", 1, 0, None, "", "main"), (6, "retried", 2, 0, None, "研发投入输入框首次超时，重试后成功", "main"),
+               (7, "ok", 1, 0, None, "", "main")]},
     {"code": "RUN-20261105-001", "process": "稳岗返还补贴申报", "material": "苏城智造科技（苏州）有限公司",
      "trigger": "manual", "status": "succeeded", "robot": "SU-BOT-01",
      "start": datetime(2026, 11, 5, 9, 5, 12), "end": datetime(2026, 11, 5, 9, 31, 40),
      "attempt_count": 2, "retry_count": 1,
-     "steps": [(1, "ok", 1, 0, None, ""), (2, "ok", 1, 0, None, ""), (3, "ok", 1, 0, None, ""),
-               (4, "ok", 1, 0, None, ""), (5, "ok", 1, 0, None, ""),
-               (6, "ok", 2, 0, None, "接管 manual 放行：人工核验审计报告扫描件"),
-               (7, "ok", 1, 0, None, ""), (8, "ok", 1, 0, None, "")]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"), (2, "ok", 1, 0, None, "", "main"), (3, "ok", 1, 0, None, "", "main"),
+               (4, "ok", 1, 0, None, "", "main"), (5, "ok", 1, 0, None, "", "main"),
+               (6, "ok", 2, 0, None, "接管 manual 放行：人工核验审计报告扫描件", "main"),
+               (7, "ok", 1, 0, None, "", "main"), (8, "ok", 1, 0, None, "", "main")]},
     {"code": "RUN-20261106-001", "process": "高新技术企业资质认定", "material": "苏州新纶纺织股份有限公司",
      "trigger": "schedule", "status": "succeeded", "robot": "SU-BOT-02",
      "start": datetime(2026, 11, 6, 9, 44, 2), "end": datetime(2026, 11, 6, 9, 49, 51),
      "attempt_count": 2, "retry_count": 1,
-     "steps": [(1, "ok", 1, 0, None, ""), (2, "ok", 1, 0, None, ""), (3, "ok", 1, 0, None, ""),
-               (4, "ok", 2, 1, None, "接管 relocate 放行：改用证书列表文本定位器"),
-               (5, "ok", 1, 0, None, ""), (6, "ok", 1, 0, None, ""), (7, "ok", 1, 0, None, "")]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"), (2, "ok", 1, 0, None, "", "main"), (3, "ok", 1, 0, None, "", "main"),
+               (4, "ok", 2, 1, None, "接管 relocate 放行：改用证书列表文本定位器", "main"),
+               (5, "ok", 1, 0, None, "", "main"), (6, "ok", 1, 0, None, "", "main"), (7, "ok", 1, 0, None, "", "main")]},
     {"code": "RUN-20261108-001", "process": "2025 企业年报", "material": "苏州新纶纺织股份有限公司",
      "trigger": "schedule", "status": "failed", "robot": "SU-BOT-01",
      "start": datetime(2026, 11, 8, 22, 0, 5), "end": datetime(2026, 11, 8, 22, 6, 30),
      "attempt_count": 1, "retry_count": 2,
-     "steps": [(1, "ok", 1, 0, None, ""),
-               (2, "retried", 2, 1, None, "旧版动态定位器未命中，改用标签定位"),
-               (3, "failed", 3, 0, "E_TIMEOUT", "信用代码校验徽标长时间未返回，重试 3 次超时")]},
+     "branch_plan": {"chosen_paths": {"audit": "audit.with"}, "merge_points": [9],
+                     "expected_seqs": [1, 2, 3, 4, 5, 6, 7, 9, 10, 11],
+                     "skipped_branch_seqs": [8]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"),
+               (2, "retried", 2, 1, None, "旧版动态定位器未命中，改用标签定位", "main"),
+               (3, "failed", 3, 0, "E_TIMEOUT", "信用代码校验徽标长时间未返回，重试 3 次超时", "main")]},
     {"code": "RUN-20261110-001", "process": "2025 企业年报", "material": "苏州云启智能装备有限公司",
      "trigger": "schedule", "status": "running", "robot": "SU-BOT-02",
      "start": datetime(2026, 11, 10, 8, 30, 0), "end": None,
      "attempt_count": 1, "retry_count": 1,
-     "steps": [(1, "ok", 1, 0, None, ""),
-               (2, "retried", 2, 1, None, "旧版动态定位器未命中，改用标签定位")]},
+     "branch_plan": {"chosen_paths": {"audit": "audit.with"}, "merge_points": [9],
+                     "expected_seqs": [1, 2, 3, 4, 5, 6, 7, 9, 10, 11],
+                     "skipped_branch_seqs": [8]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"),
+               (2, "retried", 2, 1, None, "旧版动态定位器未命中，改用标签定位", "main")]},
+    # 无审计报告路径的完整运行：演示未命中分支留痕 + 汇合点后主流程照常执行
+    {"code": "RUN-20261111-001", "process": "2025 企业年报", "material": "苏州信德模塑有限公司",
+     "trigger": "manual", "status": "succeeded", "robot": "SU-BOT-01",
+     "start": datetime(2026, 11, 11, 10, 5, 0), "end": datetime(2026, 11, 11, 10, 7, 12),
+     "attempt_count": 1, "retry_count": 0,
+     "branch_plan": {"chosen_paths": {"audit": "audit.without"}, "merge_points": [9],
+                     "expected_seqs": [1, 2, 3, 4, 5, 8, 9, 10, 11],
+                     "skipped_branch_seqs": [6, 7]},
+     "steps": [(1, "ok", 1, 0, None, "", "main"), (2, "ok", 1, 0, None, "", "main"),
+               (3, "ok", 1, 0, None, "", "main"), (4, "ok", 1, 0, None, "", "main"),
+               (5, "ok", 1, 0, None, "", "main"),
+               (6, "skipped", 1, 0, None, "分支留痕：企业无审计报告，audit.with 路径不适用", "branch_skipped"),
+               (7, "skipped", 1, 0, None, "分支留痕：企业无审计报告，audit.with 路径不适用", "branch_skipped"),
+               (8, "ok", 1, 0, None, "免审计声明已填报", "branch_taken"),
+               (9, "ok", 1, 0, None, "", "main"), (10, "ok", 1, 0, None, "", "main"),
+               (11, "ok", 1, 0, None, "", "main")]},
 ]
 
 INTERVENTION_SPECS = [
@@ -285,7 +338,9 @@ def seed() -> dict:
                     {"action": step_spec["action"], "target_desc": step_spec["target_desc"],
                      "locator_candidates": step_spec["candidates"], "locator_scores": [],
                      "timeout_ms": 15000, "max_retries": 2, "depends_on": [],
-                     "assert_rule": step_spec.get("assert_rule"), "risk_level": "medium",
+                     "assert_rule": step_spec.get("assert_rule"),
+                     "branch_meta": step_spec.get("branch_meta", {}),
+                     "risk_level": "medium",
                      "risk_reason": "no_history", "robustness_score": 50.0},
                     process_id=process.id, seq=step_spec["seq"])
         db.commit()
@@ -318,38 +373,59 @@ def seed() -> dict:
                  "success_steps": sum(1 for s in spec["steps"] if s[1] in ("ok", "retried")),
                  "retry_count": spec["retry_count"], "attempt_count": spec["attempt_count"],
                  "execution_sequence": [s[0] for s in spec["steps"]],
-                 "skipped_steps": [], "compensation": [], "log_text": "",
+                 "skipped_steps": [s[0] for s in spec["steps"] if s[1] == "skipped"],
+                 "compensation": [], "log_text": "",
+                 "branch_plan": spec.get("branch_plan", {}),
+                 "preflight_blockers": [],
                  "active_lock": str(material.id) if spec["status"] == "running" else None},
                 run_code=spec["code"])
             run.total_steps = process.step_count
             if spec["status"] == "running":
                 run.active_lock = str(material.id)
-            for (seq, status, attempt, cand_index, error_code, note) in spec["steps"]:
+            for tuple_row in spec["steps"]:
+                seq, status, attempt, cand_index, error_code, note = tuple_row[:6]
+                path_role = tuple_row[6] if len(tuple_row) > 6 else "main"
                 step = step_index[(process.id, seq)]
                 candidates = step.locator_candidates or []
                 locator = candidates[cand_index] if len(candidates) > cand_index else candidates[0]
                 key = idempotency_key(run.id, step.id, material.credit_code)
                 digest = sha256(f"{run.run_code}:{seq}".encode()).hexdigest() if status in ("ok", "retried") else ""
+                meta = step.branch_meta or {}
                 run_step, created = get_or_create(
                     db, RunStep,
                     {"seq": seq, "status": status, "locator_used": locator["selector"],
                      "locator_strategy": locator.get("strategy", "css"), "attempt": attempt,
                      "duration_ms": 14 + (seq * 7 + attempt * 3) % 28, "error_code": error_code,
                      "error_message": note if error_code else "", "idempotency_key": key,
-                     "output_digest": digest, "note": note},
+                     "output_digest": digest, "note": note,
+                     "path_role": path_role,
+                     "branch_id": meta.get("branch_id", ""),
+                     "path_id": meta.get("path_id", ""),
+                     "reconcile_bucket": "skipped" if status == "skipped" else "executed",
+                     "skip_reason": note if status == "skipped" else ""},
                     run_id=run.id, step_id=step.id)
                 if created:
                     db.flush()
                 else:
                     run_step.status = status
                     run_step.note = note
+                    run_step.path_role = path_role
+                    run_step.branch_id = meta.get("branch_id", "")
+                    run_step.path_id = meta.get("path_id", "")
+                    run_step.reconcile_bucket = "skipped" if status == "skipped" else "executed"
             # 运行日志（可重复执行，内容固定）
             lines = [f"robot={spec['robot']} 触发={spec['trigger']} 流程={process.name} v{run.process_version}",
-                     f"企业={material.company_name} 信用代码={material.credit_code}",
-                     f"DAG 拓扑序列={[s[0] for s in spec['steps']]}"]
-            lines += [f"step {seq:02d} 接管放行 {note}" if note and status == "ok" and attempt > 1
-                      else f"step {seq:02d} {status}" + (f" {error_code}" if error_code else "")
-                      for (seq, status, attempt, _c, error_code, note) in spec["steps"]]
+                     f"企业={material.company_name} 信用代码={material.credit_code}"]
+            if spec.get("branch_plan"):
+                lines.append(f"分支规划命中路径={spec['branch_plan'].get('chosen_paths')} "
+                             f"汇合点={spec['branch_plan'].get('merge_points')}")
+            lines.append(f"执行序列={[s[0] for s in spec['steps']]}")
+            lines += [
+                (f"step {row[0]:02d} 接管放行 {row[5]}" if row[5] and row[1] == "ok" and row[2] > 1
+                 else f"step {row[0]:02d} {row[1]}" + (f" {row[4]}" if row[4] else ""))
+                + (f"（{row[6]}）" if len(row) > 6 and row[6] != "main" else "")
+                for row in spec["steps"]
+            ]
             run.log_text = "[" + spec["start"].strftime("%H:%M:%S") + "] " + "\n[seed] ".join(lines)
         db.commit()
 

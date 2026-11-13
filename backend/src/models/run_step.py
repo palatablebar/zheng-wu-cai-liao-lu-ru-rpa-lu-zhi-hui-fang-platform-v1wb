@@ -22,3 +22,10 @@ class RunStep(Base, TimestampMixin):
     idempotency_key: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     output_digest: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     note: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    # 分支留痕：main=主流程；branch_taken=命中分支实际执行；branch_skipped=未命中分支留痕跳过
+    path_role: Mapped[str] = mapped_column(String(20), default="main", nullable=False)
+    branch_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    path_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    # 对账桶：expected/executed/skipped/unmatched，运行详情与报告据此对清
+    reconcile_bucket: Mapped[str] = mapped_column(String(20), default="executed", nullable=False)
+    skip_reason: Mapped[str] = mapped_column(String(255), default="", nullable=False)

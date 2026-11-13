@@ -40,7 +40,7 @@ docker compose ps             # 等 5/5 healthy
 
 ```bash
 docker compose exec backend python -m scripts.seed_demo
-# SEED_SUMMARY brand=rpaloop processes=4 steps=32 materials=6 runs=8 runsteps=45 interventions=3 users=3
+# SEED_SUMMARY brand=rpaloop processes=4 steps=34 materials=7 runs=9 runsteps=58 interventions=3 users=3
 ```
 
 ## 核心功能
@@ -48,12 +48,12 @@ docker compose exec backend python -m scripts.seed_demo
 | 页面 | 路径 | 说明 |
 |---|---|---|
 | 登录 | `/login` | 三角色演示账号，一键填入 |
-| 流程库 | `/processes` | 4 个流程（年报 9 步 / 资质 7 步 / 补贴 8 步 / 变更 8 步） |
-| 步骤编辑器 | `/processes/:id/edit` | 左侧步骤灯列 + 右侧定位器候选与稳健分、断言/重试配置、干跑 |
+| 流程库 | `/processes` | 4 个流程（年报 11 步含审计报告条件分支 / 资质 7 步 / 补贴 8 步 / 变更 8 步） |
+| 步骤编辑器 | `/processes/:id/edit` | 左侧步骤灯列（分支/汇合点标记）+ 右侧定位器候选与稳健分、断言/重试、分支适用条件与汇合点配置、干跑 |
 | 值守看板 | `/board` | 队列、进行中 run 步骤灯、失败高亮，2s 轮询 |
-| 运行详情 | `/runs/:id` | 步骤时间线、命中定位器、幂等键、接管记录、日志、报告导出 |
+| 运行详情 | `/runs/:id` | 步骤时间线（命中分支/未命中留痕）、四桶对账面板、命中定位器、幂等键、接管记录、日志、报告导出 |
 | 接管队列 | `/interventions` | 重试 / 改定位器 / 跳过 / 终止；viewer 403 |
-| 材料库 | `/materials` | GB 32100 信用代码校验位真算，2 条非法标红且不能发起申报 |
+| 材料库 | `/materials` | GB 32100 信用代码校验位真算，2 条非法标红且不能发起申报；档案未录入企业触发分支预检拦截 |
 
 ## 核心算法
 
@@ -74,7 +74,7 @@ docker compose exec backend python -m scripts.seed_demo
 
 - **DAG**：步骤 `depends_on`（空=链式依赖 seq-1）→ Kahn 拓扑排序，执行序列落库 `runs.execution_sequence`。
 - **幂等键**：`sha256(run_id + step_id + material.credit_code)`；续跑时已成功且幂等键一致的步骤跳过，
-  跳过集合落库 `runs.skipped_steps`。
+  跳过集合落库 `runs.skipped_steps`。补录后重跑复用首次落库的分支规划，主流程步骤不重复执行、路径不翻转。
 - **失败分类**：transient(timeout/network) → 指数退避 1/2/4s 至 `max_retries`；
   `assert_failed`/`locator_drift` → 生成 `Intervention` 并把 run 置为 `takeover` 暂停。
 - **并发**：同一 Material 同时仅允许 1 个进行中的 run —— `runs.active_lock` 唯一约束 + 材料行锁，
@@ -82,6 +82,27 @@ docker compose exec backend python -m scripts.seed_demo
 - **可复现**：`dry_run` 不真实等待；assert 失败由 `Material.missing_flags` 固定触发。
 - **执行器**：Celery worker（Redis broker）消费 `rpaloop.execute_run`，逐步骤记录
   `run_steps`（attempt/耗时/命中定位器/错误码/幂等键/output_digest）。
+
+### 算法 C：条件分支路由 + 四桶对账 `backend/src/services/branch_planner.py`
+
+解决「有审计报告 / 无审计报告两条路径录进同一流程，回放时隐藏页面步骤反复失败、未走分支被算漏执行」。
+
+- **分支建模**：分支步骤 `steps.branch_meta` 记录 `branch_id`（分支组）、`path_id`（路径）、
+  `when`（**适用条件**，如 `attachment:审计报告 exists`）、`merge_seq`（**回到主流程的位置/汇合点**）、
+  `is_default`（兜底默认路径，每组至多一条）。
+- **条件三态评估**：条件结果为 成立 / 不成立 / **无法判断**（附件状态未知、字段缺失、未知表达式）。
+  支持 `attachment:x exists|missing`、`field:y == v`、`credit_valid == true` 与 `&&` 组合；
+  `missing_flags` 中的 `attachment:x:unknown` 显式表示档案未录入。
+- **单路径执行**：每个分支组只选一条命中路径；后续步骤严格按 `merge_seq` 汇合点顺序展开
+  （`plan_branches().ordered_seqs`）。未命中路径的步骤**不触发任何页面动作**，只写
+  `run_steps.status=skipped`、`path_role=branch_skipped` 留痕。
+- **发起前闸门**：`POST /api/runs/preflight` 返回命中路径、汇合点与 `blockers`；
+  正式申报遇到无法判断的条件直接 422 `BRANCH_CONDITION_UNKNOWN` 阻止，干跑允许落痕。
+- **续跑稳定**：分支规划快照落 `runs.branch_plan`，续跑/补录后重跑复用同一快照，只走原路径。
+- **四桶对账**：`reconcile()` 输出 **应执行 expected / 实际执行 executed / 跳过 skipped /
+  未匹配 unmatched**，运行详情页 `ReconciliationPanel` 与 Markdown/CSV 报告均可对清；
+  流程改版产生的规划外记录进入 unmatched。
+- **纯标准库实现**，单测 `backend/tests/`（`python3 -I` 可跑，无需第三方依赖）。
 
 ### GB 32100 统一社会信用代码校验 `backend/src/utils/credit_code.py`
 
@@ -122,6 +143,7 @@ gb-564/
 | MatterType / ProcessStatus | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts` |
 | StepAction / StepStatus | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts` |
 | RunStatus / RunTrigger / RunStepStatus | `backend/src/constants/enums.py` `models/run*.py` | `frontend/src/constants/enums.ts` `types/index.ts` |
+| StepPathRole / ReconcileBucket | `backend/src/constants/enums.py` | `frontend/src/constants/enums.ts` `types/index.ts` |
 | InterventionReason / InterventionStatus | `backend/src/constants/enums.py` `models/intervention.py` | `frontend/src/constants/enums.ts` |
 | RiskLevel | `backend/src/constants/enums.py` `locator_score.py` | `frontend/src/constants/enums.ts` `utils/risk.ts` |
 

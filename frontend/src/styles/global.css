@@ -399,3 +399,9 @@ h1, h2, h3, h4, p { margin: 0; }
   .stat-cell { flex-basis: 50%; }
   .rowitem { grid-template-columns: 1fr !important; }
 }
+
+/* 条件分支：未命中路径留痕弱化展示 */
+.chip.idle { color: var(--muted); border-color: var(--line-soft); background: oklch(0.4 0.02 165 / 0.12); }
+.tl-branch-skip { opacity: 0.72; }
+.tl-branch-skip .tl-title { text-decoration: line-through; text-decoration-color: var(--line-soft); }
+.tl-branch-skip .tl-body { background: oklch(0.4 0.02 165 / 0.08); border-radius: 8px; }

@@ -11,7 +11,7 @@ import ProcessRail from '../components/business/ProcessRail';
 import { MATTER_TYPE_LABELS, PROCESS_STATUS_LABELS, STEP_ACTION_LABELS } from '../constants/enums';
 import { useAsync } from '../hooks/useAsync';
 import { useAuthStore } from '../stores/auth';
-import type { LocatorCandidate, Material, Step } from '../types';
+import type { BranchMeta, LocatorCandidate, Material, Step } from '../types';
 
 interface DraftState {
   action: string;
@@ -21,6 +21,7 @@ interface DraftState {
   max_retries: number;
   assert_rule: string;
   depends_on: number[];
+  branch_meta: BranchMeta | Record<string, never>;
 }
 
 function toDraft(step: Step): DraftState {
@@ -32,6 +33,7 @@ function toDraft(step: Step): DraftState {
     max_retries: step.max_retries,
     assert_rule: step.assert_rule || '',
     depends_on: step.depends_on || [],
+    branch_meta: step.branch_meta ? { ...step.branch_meta } : {},
   };
 }
 
@@ -72,6 +74,23 @@ export default function StepEditorPage() {
   const setField = <K extends keyof DraftState>(key: K, value: DraftState[K]) => {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
   };
+
+  const setBranchField = (key: keyof BranchMeta, value: string | number | boolean) => {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const current = (prev.branch_meta.branch_id ? prev.branch_meta : {
+        branch_id: '', path_id: '', when: '', merge_seq: 0, is_default: false,
+      }) as BranchMeta;
+      return { ...prev, branch_meta: { ...current, [key]: value } };
+    });
+  };
+
+  const clearBranch = () => setField('branch_meta', {});
+
+  const mergeCandidates = useMemo(
+    () => steps.filter((step) => step.seq > selectedSeq).map((step) => step.seq),
+    [steps, selectedSeq],
+  );
 
   const save = async () => {
     if (!draft || !selectedStep) return;
@@ -179,7 +198,8 @@ export default function StepEditorPage() {
       <div className="studio">
         <ProcessRail steps={steps} selectedSeq={selectedSeq}
           onSelect={(seq) => setSelectedSeq(seq)} title="STEPS · 灯列"
-          foot={canEdit ? '点击步骤编辑定位器与断言' : '审计只读：不可编辑'} />
+          mergeSeqs={(data.branch_groups || []).map((group) => group.merge_seq)}
+          foot={canEdit ? '点击步骤编辑定位器、断言与分支条件' : '审计只读：不可编辑'} />
 
         <div className="stack">
           {!selectedStep || !draft ? (
@@ -233,6 +253,77 @@ export default function StepEditorPage() {
                         onChange={(event) => setField('assert_rule', event.target.value)} />
                     </label>
                   </div>
+
+                  <Panel kicker="BRANCH ROUTING · 条件分支" title="分支适用条件与汇合点" tight>
+                    {data.branch_groups?.length ? (
+                      <div className="stack" style={{ marginBottom: 10 }}>
+                        {data.branch_groups.map((group) => (
+                          <div key={group.branch_id} className="banner warn">
+                            分支组 {group.branch_id}：汇合点 step {group.merge_seq}
+                            {group.merge_target ? `（${group.merge_target}）` : ''}，路径：
+                            {group.paths.map((path) => (
+                              <span key={path.path_id} className="chip" style={{ marginLeft: 6 }}>
+                                {path.path_id}{path.is_default ? '·默认' : ''}：{path.when || '无条件'}
+                              </span>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {'branch_id' in draft.branch_meta && draft.branch_meta.branch_id ? (
+                      <div className="stack">
+                        <div className="flex gap-12" style={{ flexWrap: 'wrap' }}>
+                          <label className="field" style={{ flex: 1, minWidth: 160 }}>
+                            <span className="field-label">分支组 ID（branch_id）</span>
+                            <input className="input mono" value={draft.branch_meta.branch_id} disabled={!canEdit}
+                              onChange={(event) => setBranchField('branch_id', event.target.value)} />
+                          </label>
+                          <label className="field" style={{ flex: 1, minWidth: 160 }}>
+                            <span className="field-label">路径 ID（path_id）</span>
+                            <input className="input mono" value={draft.branch_meta.path_id} disabled={!canEdit}
+                              onChange={(event) => setBranchField('path_id', event.target.value)} />
+                          </label>
+                          <label className="field" style={{ flex: 1, minWidth: 160 }}>
+                            <span className="field-label">回到主流程位置（merge_seq）</span>
+                            <select className="select" value={draft.branch_meta.merge_seq} disabled={!canEdit}
+                              onChange={(event) => setBranchField('merge_seq', Number(event.target.value))}>
+                              {mergeCandidates.map((seq) => <option key={seq} value={seq}>step {seq}</option>)}
+                            </select>
+                          </label>
+                        </div>
+                        <label className="field">
+                          <span className="field-label">适用条件（when，如 attachment:审计报告 exists）</span>
+                          <input className="input mono" value={draft.branch_meta.when} disabled={!canEdit}
+                            placeholder="attachment:审计报告 exists / attachment:审计报告 missing / credit_valid == true"
+                            onChange={(event) => setBranchField('when', event.target.value)} />
+                        </label>
+                        <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <input type="checkbox" checked={draft.branch_meta.is_default} disabled={!canEdit}
+                            onChange={(event) => setBranchField('is_default', event.target.checked)} />
+                          <span className="field-label" style={{ margin: 0 }}>
+                            默认路径（条件均不成立/无法判断时兜底，每组至多一条）
+                          </span>
+                        </label>
+                        {canEdit ? (
+                          <div>
+                            <button className="btn btn-ghost btn-sm" type="button" onClick={clearBranch}>
+                              移出分支（恢复为主流程步骤）
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : canEdit ? (
+                      <button className="btn btn-sm" type="button"
+                        onClick={() => setField('branch_meta', {
+                          branch_id: 'branch-1', path_id: 'branch-1.path-a',
+                          when: '', merge_seq: mergeCandidates[0] ?? selectedSeq + 1, is_default: false,
+                        })}>
+                        标记为分支步骤
+                      </button>
+                    ) : (
+                      <div className="tiny faint">该步骤属于主流程，未配置分支。</div>
+                    )}
+                  </Panel>
                   <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
                     <button className="btn btn-ghost btn-sm" type="button"
                       onClick={() => setDraft(toDraft(selectedStep))} disabled={!canEdit}>还原本步</button>

@@ -9,6 +9,14 @@ class LocatorCandidateIn(BaseModel):
     desc: str = ""
 
 
+class BranchMetaIn(BaseModel):
+    branch_id: str = Field(max_length=64)
+    path_id: str | None = Field(default=None, max_length=64)
+    when: str | None = Field(default=None, max_length=255)
+    merge_seq: int | None = Field(default=None, ge=1)
+    is_default: bool = False
+
+
 class StepUpdateRequest(BaseModel):
     action: str | None = None
     target_desc: str | None = None
@@ -17,6 +25,7 @@ class StepUpdateRequest(BaseModel):
     max_retries: int | None = Field(default=None, ge=0, le=5)
     assert_rule: str | None = None
     depends_on: list[int] | None = None
+    branch_meta: BranchMetaIn | dict | None = None
 
 
 class StepImportRequest(BaseModel):

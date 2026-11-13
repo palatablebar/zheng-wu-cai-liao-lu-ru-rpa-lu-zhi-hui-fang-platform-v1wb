@@ -29,6 +29,75 @@ export interface LocatorScore extends LocatorCandidate {
 export type StepAction = 'click' | 'input' | 'upload' | 'assert' | 'wait';
 export type RiskLevel = 'low' | 'medium' | 'high';
 
+export interface BranchMeta {
+  branch_id: string;
+  path_id: string;
+  when: string;
+  merge_seq: number;
+  is_default: boolean;
+}
+
+export interface BranchPath {
+  path_id: string;
+  entry_seq: number;
+  seqs: number[];
+  when: string;
+  is_default: boolean;
+  value?: boolean | null;
+  reason?: string;
+}
+
+export interface BranchGroup {
+  branch_id: string;
+  merge_seq: number;
+  merge_target?: string;
+  paths: BranchPath[];
+  evaluations?: BranchPath[];
+}
+
+export interface PreflightBlocker {
+  branch_id: string;
+  path_id: string;
+  entry_seq: number;
+  when: string;
+  reason: string;
+  message: string;
+}
+
+export interface PreflightResult {
+  process_id: number;
+  material_id: number;
+  company_name: string;
+  resolvable: boolean;
+  can_declare: boolean;
+  credit_valid: boolean;
+  blockers: PreflightBlocker[];
+  chosen_paths: Record<string, string>;
+  merge_points: number[];
+  expected_seqs: number[];
+  skipped_branch_seqs: number[];
+  ordered_seqs: number[];
+  branch_groups: BranchGroup[];
+}
+
+export interface Reconciliation {
+  expected: { seq: number; reason?: string; target_desc?: string }[];
+  executed: { seq: number; status: string; note?: string; target_desc?: string }[];
+  skipped: { seq: number; status: string; note?: string; target_desc?: string }[];
+  unmatched: { seq: number; status: string; reason?: string; target_desc?: string }[];
+  summary: {
+    planned_total: number;
+    expected_total: number;
+    executed_total: number;
+    skipped_total: number;
+    unmatched_total: number;
+    pending_total: number;
+  };
+  chosen_paths: Record<string, string>;
+  merge_points: number[];
+  branch_groups?: BranchGroup[];
+}
+
 export interface Step {
   id: number;
   process_id: number;
@@ -39,6 +108,7 @@ export interface Step {
   max_retries: number;
   depends_on: number[];
   assert_rule: string;
+  branch_meta: BranchMeta | Record<string, never>;
   robustness_score: number;
   risk_level: RiskLevel;
   risk_reason: string;
@@ -62,6 +132,7 @@ export interface ProcessItem {
   published_at: string | null;
   created_at?: string;
   steps?: Step[];
+  branch_groups?: BranchGroup[];
   risk_summary?: { high: number; medium: number; low: number };
 }
 
@@ -80,6 +151,8 @@ export interface Material {
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'takeover';
 export type RunTrigger = 'manual' | 'schedule' | 'dry_run';
 export type RunStepStatus = 'ok' | 'retried' | 'failed' | 'skipped';
+export type StepPathRole = 'main' | 'branch_taken' | 'branch_skipped';
+export type ReconcileBucket = 'expected' | 'executed' | 'skipped' | 'unmatched';
 
 export interface RunStepItem {
   id: number;
@@ -96,9 +169,15 @@ export interface RunStepItem {
   idempotency_key: string;
   output_digest: string;
   note: string;
+  path_role: StepPathRole;
+  branch_id: string;
+  path_id: string;
+  reconcile_bucket: ReconcileBucket;
+  skip_reason: string;
   target_desc: string;
   action: string;
   assert_rule: string;
+  branch_meta?: BranchMeta | Record<string, never>;
 }
 
 export interface InterventionItem {
@@ -139,6 +218,16 @@ export interface RunItem {
   attempt_count: number;
   execution_sequence: number[];
   skipped_steps: number[];
+  branch_plan: {
+    ordered_seqs?: number[];
+    expected_seqs?: number[];
+    skipped_branch_seqs?: number[];
+    chosen_paths?: Record<string, string>;
+    merge_points?: number[];
+    unknown_conditions?: PreflightBlocker[];
+    warnings?: string[];
+  };
+  preflight_blockers: PreflightBlocker[];
   log_text: string;
   created_at: string;
   process_name?: string;
@@ -148,6 +237,7 @@ export interface RunItem {
   matter_type?: string;
   run_steps?: RunStepItem[];
   interventions?: InterventionItem[];
+  reconciliation?: Reconciliation;
   progress?: { total: number; done: number; steps: BoardStep[] };
 }
 

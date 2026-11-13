@@ -1,5 +1,5 @@
 import { http } from './client';
-import type { RunItem } from '../types';
+import type { PreflightResult, RunItem } from '../types';
 
 export const runApi = {
   list: (params: { status?: string; process_id?: number; limit?: number } = {}) => {
@@ -12,5 +12,11 @@ export const runApi = {
   detail: (id: number) => http.get<RunItem>(`/runs/${id}`),
   create: (processId: number, materialId: number, trigger = 'manual') =>
     http.post<RunItem>('/runs', { process_id: processId, material_id: materialId, trigger }),
+  preflight: (processId: number, materialId: number) =>
+    http.post<PreflightResult>('/runs/preflight', {
+      process_id: processId,
+      material_id: materialId,
+      trigger: 'manual',
+    }),
   cancel: (id: number, note = '') => http.post<RunItem>(`/runs/${id}/cancel`, { note }),
 };

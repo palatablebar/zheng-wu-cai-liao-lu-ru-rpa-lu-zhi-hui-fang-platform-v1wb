@@ -47,6 +47,19 @@ export const RUN_STEP_STATUS_LABELS: Record<RunStepStatus, string> = {
   skipped: '跳过',
 };
 
+export const STEP_PATH_ROLE_LABELS: Record<string, string> = {
+  main: '主流程',
+  branch_taken: '命中分支',
+  branch_skipped: '未命中分支·留痕',
+};
+
+export const RECONCILE_BUCKET_LABELS: Record<string, string> = {
+  expected: '应执行',
+  executed: '实际执行',
+  skipped: '跳过',
+  unmatched: '未匹配',
+};
+
 export const STEP_ACTION_LABELS: Record<StepAction, string> = {
   click: '点击',
   input: '录入',

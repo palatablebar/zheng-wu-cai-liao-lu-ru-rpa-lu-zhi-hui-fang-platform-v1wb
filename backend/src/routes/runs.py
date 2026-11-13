@@ -9,6 +9,12 @@ from src.schemas.run import RunCancelRequest, RunCreateRequest
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
+@router.post("/preflight")
+def preflight_run(payload: RunCreateRequest, db: Session = Depends(get_db),
+                  _: dict = Depends(require_roles(*ADMIN_ENGINEER))):
+    return run_controller.preflight(db, payload.model_dump())
+
+
 @router.post("")
 def create_run(payload: RunCreateRequest, db: Session = Depends(get_db),
                user: dict = Depends(require_roles(*ADMIN_ENGINEER))):

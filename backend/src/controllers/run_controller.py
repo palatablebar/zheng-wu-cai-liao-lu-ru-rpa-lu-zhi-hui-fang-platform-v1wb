@@ -7,6 +7,10 @@ def create_run(db, user, payload: dict) -> dict:
     return run_service.create_run(db, user, payload["process_id"], payload["material_id"], payload["trigger"])
 
 
+def preflight(db, payload: dict) -> dict:
+    return run_service.preflight_run(db, payload["process_id"], payload["material_id"])
+
+
 def list_runs(db, status=None, process_id=None, trigger=None, limit: int = 50) -> dict:
     items = run_service.list_runs(db, status, process_id, trigger, limit)
     return {"total": len(items), "items": items}

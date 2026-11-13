@@ -1,5 +1,6 @@
 import { formatDuration } from '../../utils/format';
 import { runStepTone } from '../../utils/risk';
+import { STEP_PATH_ROLE_LABELS } from '../../constants/enums';
 import StatusLamp from '../common/StatusLamp';
 
 export interface TimelineStep {
@@ -14,6 +15,10 @@ export interface TimelineStep {
   error_code?: string | null;
   error_message?: string;
   note?: string;
+  path_role?: string;
+  path_id?: string;
+  skip_reason?: string;
+  reconcile_bucket?: string;
 }
 
 interface StepTimelineProps {
@@ -38,10 +43,11 @@ export default function StepTimeline({ steps, onSelect, selectedSeq }: StepTimel
     <div className="timeline">
       {steps.map((step) => {
         const tone = runStepTone(step.status || 'idle');
+        const isBranchSkip = step.path_role === 'branch_skipped';
         return (
           <div
             key={step.seq}
-            className="tl-item"
+            className={`tl-item${isBranchSkip ? ' tl-branch-skip' : ''}`}
             style={{ cursor: onSelect ? 'pointer' : 'default' }}
             onClick={() => onSelect?.(step)}
           >
@@ -54,6 +60,12 @@ export default function StepTimeline({ steps, onSelect, selectedSeq }: StepTimel
               <div className="tl-head">
                 <span className="tl-title">{step.target_desc}</span>
                 <span className="chip">{step.action}</span>
+                {step.path_role && step.path_role !== 'main' ? (
+                  <span className={`chip ${isBranchSkip ? 'idle' : 'ok'}`}>
+                    {STEP_PATH_ROLE_LABELS[step.path_role] || step.path_role}
+                    {step.path_id ? ` · ${step.path_id}` : ''}
+                  </span>
+                ) : null}
                 {step.status ? <span className={`chip ${tone}`}>{STATUS_LABELS[step.status] || step.status}</span> : null}
                 {step.attempt && step.attempt > 1 ? <span className="chip warn">attempt {step.attempt}</span> : null}
                 {step.duration_ms !== undefined ? (
@@ -69,6 +81,9 @@ export default function StepTimeline({ steps, onSelect, selectedSeq }: StepTimel
                 <div className="tl-error">
                   {step.error_code} · {step.error_message}
                 </div>
+              ) : null}
+              {step.skip_reason ? (
+                <div className="tiny" style={{ color: 'var(--muted)' }}>留痕：{step.skip_reason}</div>
               ) : null}
               {step.note ? <div className="tiny muted">{step.note}</div> : null}
             </div>

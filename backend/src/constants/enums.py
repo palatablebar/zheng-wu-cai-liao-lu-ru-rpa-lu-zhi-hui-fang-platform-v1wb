@@ -50,6 +50,19 @@ class RunStepStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class StepPathRole(str, Enum):
+    MAIN = "main"                  # 主流程步骤
+    BRANCH_TAKEN = "branch_taken"  # 命中分支、实际执行
+    BRANCH_SKIPPED = "branch_skipped"  # 未命中分支，留痕跳过
+
+
+class ReconcileBucket(str, Enum):
+    EXPECTED = "expected"    # 应执行
+    EXECUTED = "executed"    # 实际执行
+    SKIPPED = "skipped"      # 跳过（未命中分支 / 幂等 / 接管）
+    UNMATCHED = "unmatched"  # 未匹配（流程改版等）
+
+
 class InterventionReason(str, Enum):
     ASSERT_FAILED = "assert_failed"
     LOCATOR_DRIFT = "locator_drift"

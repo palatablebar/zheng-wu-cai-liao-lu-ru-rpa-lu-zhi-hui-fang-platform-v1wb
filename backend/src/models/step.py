@@ -22,3 +22,6 @@ class Step(Base, TimestampMixin):
     max_retries: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     depends_on: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     assert_rule: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 分支元数据：branch_id 相同的步骤属于同一条件分支组；when=适用条件；
+    # merge_seq=回到主流程的位置（汇合点步骤 seq）；is_default=兜底默认路径。
+    branch_meta: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
